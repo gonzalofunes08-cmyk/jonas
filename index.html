@@ -987,24 +987,48 @@ body.emp #branch-pill{pointer-events:none}
 
     <div class="subview" id="sub-mas-sync">
       <div class="panel">
+        <div class="form-title">Nube de Digital Store (Vercel)</div>
+        <div class="form-sub">Guarda tus datos en la nube y los muestra igual en todos tus dispositivos. Se actualiza solo cada pocos segundos. Funciona en el sitio publicado en Vercel.</div>
+        <div id="sync-status-vercel" class="calc-box" style="margin-bottom:16px;"></div>
+        <div class="field"><label for="v-pass">Contraseña de la nube</label><input type="password" id="v-pass" autocomplete="off" placeholder="La variable SYNC_PASSWORD de Vercel"></div>
+        <div class="field"><label for="v-url">URL del sitio en Vercel (opcional)</label><input type="text" id="v-url" placeholder="https://tu-app.vercel.app — vacío si abriste este mismo sitio"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="syncConnect('vercel')">Conectar</button>
+          <button class="btn btn-secondary" onclick="syncNow()">Sincronizar ahora</button>
+          <button class="btn btn-danger-outline" onclick="firebaseDisconnect()">Desconectar</button>
+        </div>
+        <div class="backup-note">Una vez, en Vercel → Settings → Environment Variables: SYNC_PASSWORD (la contraseña que elijas), SUPABASE_URL y SUPABASE_SERVICE_KEY. Después, Redeploy. Los datos se guardan en Supabase y solo se leen o escriben con la contraseña.</div>
+      </div>
+
+      <div class="panel">
         <div class="form-title">Conectar a Firebase</div>
-        <div class="form-sub">Pegá la URL de tu Realtime Database y todos los dispositivos que la usen van a ver los mismos datos. Importante: funciona abriendo el archivo .html (descargado o autohospedado), no desde el link publicado de claude.ai, porque esa página bloquea las conexiones a servicios externos.</div>
-
-        <div id="firebase-status-box" class="calc-box" style="margin-bottom:16px;"></div>
-
+        <div class="form-sub">Pegá la URL de tu Realtime Database y todos los dispositivos que la usen van a ver los mismos datos.</div>
+        <div id="sync-status-firebase" class="calc-box" style="margin-bottom:16px;"></div>
         <div class="field"><label for="firebase-url">URL de la base de datos</label><input type="text" id="firebase-url" placeholder="https://tu-proyecto-default-rtdb.firebaseio.com"></div>
         <div class="field"><label for="firebase-secret">Secreto (opcional)</label><input type="text" id="firebase-secret" placeholder="Solo si activaste reglas con clave"></div>
-
         <div class="btn-row">
-          <button class="btn btn-primary" onclick="firebaseSaveConfig()">Guardar y conectar</button>
+          <button class="btn btn-primary" onclick="syncConnect('firebase')">Guardar y conectar</button>
           <button class="btn btn-secondary" onclick="firebasePullNow()">Traer datos</button>
           <button class="btn btn-secondary" onclick="firebasePushNow()">Subir mis datos</button>
           <button class="btn btn-danger-outline" onclick="firebaseDisconnect()">Desconectar</button>
         </div>
+        <div class="backup-note">Cómo crear la base (una vez): 1) console.firebase.google.com → crear proyecto. 2) Realtime Database → Crear base de datos → modo de prueba. 3) Copiá la URL (termina en firebaseio.com) y pegala arriba. 4) En cada otro dispositivo, pegá la misma URL.</div>
+      </div>
 
-        <div class="backup-note">
-          Cómo crear la base (una vez): 1) console.firebase.google.com → crear proyecto. 2) Realtime Database → Crear base de datos → modo de prueba. 3) Copiá la URL (termina en firebaseio.com) y pegala arriba. 4) En cada otro dispositivo, pegá la misma URL.
+      <div class="panel">
+        <div class="form-title">Conectar a Supabase (clave pública)</div>
+        <div class="form-sub">Guarda directo en tu tabla de Supabase con la clave pública. Para proteger con contraseña usá la Nube (Vercel).</div>
+        <div id="sync-status-supabase" class="calc-box" style="margin-bottom:16px;"></div>
+        <div class="field"><label for="sb-url">URL del proyecto</label><input type="text" id="sb-url" placeholder="https://xxxx.supabase.co"></div>
+        <div class="field"><label for="sb-key">Clave pública (anon / publishable)</label><input type="text" id="sb-key" placeholder="eyJ... o sb_publishable_..."></div>
+        <div class="field"><label for="sb-table">Tabla</label><input type="text" id="sb-table" placeholder="app_data"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="syncConnect('supabase')">Guardar y conectar</button>
+          <button class="btn btn-secondary" onclick="firebasePullNow()">Traer datos</button>
+          <button class="btn btn-secondary" onclick="firebasePushNow()">Subir mis datos</button>
+          <button class="btn btn-danger-outline" onclick="firebaseDisconnect()">Desconectar</button>
         </div>
+        <div class="backup-note">Una vez: supabase.com → New project → SQL Editor → ejecutá el SQL del README (crea la tabla y la política de acceso) → Project Settings → API: copiá la URL y la clave anon/publishable.</div>
       </div>
 
       <div class="panel">
@@ -1806,8 +1830,23 @@ body.emp #branch-pill{pointer-events:none}
   let firebaseWriteTimer = null;
   let firebaseStatus = 'idle'; // idle | ok | error
 
-  function loadFirebaseConfig(){ firebaseConfig = safeParse(FIREBASE_KEY, { url: '', secret: '' }); }
+  const SYNC_NAMES = { firebase:'Firebase', supabase:'Supabase', vercel:'Vercel' };
+  const SYNC_DEFAULT = { mode:'firebase', url:'', secret:'', sbUrl:'', sbKey:'', sbTable:'app_data', vUrl:'', vPass:'' };
+  const SYNC_TS_KEY = 'liteStock_syncTs_v1';
+  let firebaseLastError = '';
+  let syncLocalTs = 0, syncInFlight = false, syncPending = false, syncApplyingRemote = false, syncLastOkAt = null;
+  try{ syncLocalTs = Number(localStorage.getItem(SYNC_TS_KEY)) || 0; }catch(e){}
+  function setSyncTs(t){ syncLocalTs = t; try{ localStorage.setItem(SYNC_TS_KEY, String(t)); }catch(e){} }
+  function loadFirebaseConfig(){ firebaseConfig = Object.assign({}, SYNC_DEFAULT, safeParse(FIREBASE_KEY, {})); }
   function saveFirebaseConfigToStorage(){ try{ localStorage.setItem(FIREBASE_KEY, JSON.stringify(firebaseConfig)); }catch(e){} }
+  function syncMode(){ return SYNC_NAMES[firebaseConfig.mode] ? firebaseConfig.mode : 'firebase'; }
+  function syncName(){ return SYNC_NAMES[syncMode()]; }
+  function syncConfigured(){
+    const c = firebaseConfig, m = syncMode();
+    if(m === 'supabase') return !!(c.sbUrl && c.sbKey);
+    if(m === 'vercel') return !!c.vPass;
+    return !!c.url;
+  }
   function firebaseEndpoint(){
     if(!firebaseConfig.url) return null;
     let base = firebaseConfig.url.trim().replace(/\/+$/, '');
@@ -1815,85 +1854,207 @@ body.emp #branch-pill{pointer-events:none}
     if(firebaseConfig.secret) url += `?auth=${encodeURIComponent(firebaseConfig.secret)}`;
     return url;
   }
+  function syncVercelBase(){
+    const c = firebaseConfig;
+    if(c.vUrl) return c.vUrl.trim().replace(/\/+$/, '');
+    return (/^https?:$/.test(location.protocol)) ? location.origin : '';
+  }
+  function syncSbTable(){ return /^[A-Za-z0-9_]+$/.test(firebaseConfig.sbTable || '') ? firebaseConfig.sbTable : 'app_data'; }
+  function syncSbHeaders(extra){
+    const k = (firebaseConfig.sbKey || '').trim();
+    const h = { apikey: k };
+    if(k.indexOf('eyJ') === 0) h.Authorization = 'Bearer ' + k;
+    return Object.assign(h, extra || {});
+  }
+  async function syncRead(){
+    const m = syncMode(), c = firebaseConfig;
+    let res;
+    if(m === 'supabase'){
+      res = await fetch(`${c.sbUrl.trim().replace(/\/+$/, '')}/rest/v1/${syncSbTable()}?id=eq.golite&select=data`, { headers: syncSbHeaders() });
+    }else if(m === 'vercel'){
+      const b = syncVercelBase(); if(!b) throw new Error('Poné la URL de tu sitio en Vercel');
+      res = await fetch(b + '/api/sync', { headers: { 'x-sync-password': c.vPass }, cache: 'no-store' });
+    }else{
+      res = await fetch(firebaseEndpoint());
+    }
+    if(res.status === 401 && m === 'vercel') throw new Error('Contraseña incorrecta');
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if(m === 'supabase') return (Array.isArray(data) && data[0]) ? data[0].data : null;
+    return data;
+  }
+  async function syncWrite(payload){
+    const m = syncMode(), c = firebaseConfig;
+    let res;
+    if(m === 'supabase'){
+      res = await fetch(`${c.sbUrl.trim().replace(/\/+$/, '')}/rest/v1/${syncSbTable()}?on_conflict=id`, {
+        method: 'POST',
+        headers: syncSbHeaders({ 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify({ id: 'golite', data: payload, updated_at: new Date().toISOString() })
+      });
+    }else if(m === 'vercel'){
+      const b = syncVercelBase(); if(!b) throw new Error('Poné la URL de tu sitio en Vercel');
+      res = await fetch(b + '/api/sync', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-sync-password': c.vPass }, body: JSON.stringify(payload) });
+    }else{
+      res = await fetch(firebaseEndpoint(), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    }
+    if(res.status === 401 && m === 'vercel') throw new Error('Contraseña incorrecta');
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+  }
+  function syncFailMsg(e){
+    const msg = (e && e.message) || '';
+    if(msg === 'Contraseña incorrecta' || msg.indexOf('Poné') === 0) return msg;
+    const m = syncMode();
+    if(m === 'supabase' && /HTTP (401|403)/.test(msg)) return 'Supabase rechazó el acceso: revisá la clave y la política de la tabla (RLS).';
+    if(m === 'supabase' && /HTTP (404)/.test(msg)) return 'Supabase: no existe la tabla. Ejecutá el SQL de las instrucciones.';
+    if(m === 'vercel' && /HTTP 500/.test(msg)) return 'Vercel: faltan variables de entorno (SYNC_PASSWORD, SUPABASE_URL, SUPABASE_SERVICE_KEY).';
+    if(m === 'vercel' && /HTTP 404/.test(msg)) return 'Vercel: no existe /api/sync. Subí la carpeta api al repositorio y redeployá.';
+    return `No se pudo conectar a ${syncName()}. Revisá los datos y tu conexión.`;
+  }
 
-  async function firebaseSaveConfig(){
-    firebaseConfig.url = document.getElementById('firebase-url').value.trim();
-    firebaseConfig.secret = document.getElementById('firebase-secret').value.trim();
+  async function firebaseSaveConfig(mode){
+    mode = (mode === 'supabase' || mode === 'vercel') ? mode : 'firebase';
+    const g = id => { const e = document.getElementById(id); return e ? e.value.trim() : ''; };
+    const pw = document.getElementById('v-pass');
+    firebaseConfig.mode = mode;
+    if(mode === 'firebase'){ firebaseConfig.url = g('firebase-url'); firebaseConfig.secret = g('firebase-secret'); }
+    if(mode === 'supabase'){ firebaseConfig.sbUrl = g('sb-url'); firebaseConfig.sbKey = g('sb-key'); firebaseConfig.sbTable = g('sb-table') || 'app_data'; }
+    if(mode === 'vercel'){ firebaseConfig.vUrl = g('v-url'); firebaseConfig.vPass = pw ? pw.value : ''; }
     saveFirebaseConfigToStorage();
-    if(!firebaseConfig.url){ showToast('Pegá la URL de la base de datos'); return; }
+    if(!syncConfigured()){
+      showToast(mode === 'vercel' ? 'Poné la contraseña de la nube' : (mode === 'supabase' ? 'Completá la URL y la clave de Supabase' : 'Pegá la URL de la base de datos'));
+      renderFirebaseStatus(); return;
+    }
     await firebasePullNow();
+  }
+  function syncConnect(mode){ return firebaseSaveConfig(mode); }
+
+  function syncApply(data){
+    syncApplyingRemote = true;
+    try{ applySyncedData(data); } finally { syncApplyingRemote = false; }
+    setSyncTs(Number(data._syncTs) || syncLocalTs);
   }
 
   async function firebasePushNow(){
-    const endpoint = firebaseEndpoint();
-    if(!endpoint){ showToast('Configurá primero la URL de la base de datos'); return; }
+    if(!syncConfigured()){ showToast('Configurá primero la conexión a la nube'); return false; }
+    let ok = false; const ts = Date.now(); syncPending = false; syncInFlight = true;
     try{
-      const res = await fetch(endpoint, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(collectFullPayload()) });
-      if(!res.ok) throw new Error('HTTP ' + res.status);
-      firebaseStatus = 'ok';
-      showToast('Datos subidos a Firebase');
+      await syncWrite(Object.assign(collectFullPayload(), { _syncTs: ts }));
+      setSyncTs(ts); firebaseStatus = 'ok'; firebaseLastError = ''; syncLastOkAt = new Date(); ok = true;
     }catch(e){
-      firebaseStatus = 'error';
-      showToast('No se pudo conectar a Firebase. Revisá la URL y tu conexión.', true);
+      firebaseStatus = 'error'; firebaseLastError = syncFailMsg(e);
+      showToast(firebaseLastError, true);
     }
+    syncInFlight = false;
     renderFirebaseStatus();
+    return ok;
   }
 
   async function firebasePullNow(){
-    const endpoint = firebaseEndpoint();
-    if(!endpoint){ showToast('Configurá primero la URL de la base de datos'); return; }
+    if(!syncConfigured()){ showToast('Configurá primero la conexión a la nube'); return false; }
+    let ok = false; syncInFlight = true;
     try{
-      const res = await fetch(endpoint);
-      if(!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
+      const data = await syncRead();
       if(data && (data.devices || data.accessories || data.orders || data.reservePlans)){
-        applySyncedData(data);
-        renderPanel();
-        showToast('Datos traídos de Firebase');
+        if((Number(data._syncTs) || 0) >= syncLocalTs){
+          syncApply(data);
+          renderPanel();
+          showToast('Datos traídos de ' + syncName());
+        }else{
+          syncInFlight = false; await firebasePushNow(); syncInFlight = true;
+        }
       }else{
-        await firebasePushNow();
+        syncInFlight = false; await firebasePushNow(); syncInFlight = true;
       }
-      firebaseStatus = 'ok';
+      firebaseStatus = 'ok'; firebaseLastError = ''; syncLastOkAt = new Date(); ok = true;
     }catch(e){
-      firebaseStatus = 'error';
-      showToast('No se pudo conectar a Firebase. Revisá la URL y tu conexión.', true);
+      firebaseStatus = 'error'; firebaseLastError = syncFailMsg(e);
+      showToast(firebaseLastError, true);
     }
+    syncInFlight = false;
     renderFirebaseStatus();
+    return ok;
   }
 
+  function refreshAfterSync(){
+    try{
+      const v = document.querySelector('.view.active');
+      if(v && typeof switchView === 'function') switchView(v.id.replace(/^view-/, '')); else renderPanel();
+    }catch(e){ try{ renderPanel(); }catch(_){} }
+  }
+
+  // Revisa cada pocos segundos si otro dispositivo guardó algo más nuevo.
+  async function syncPoll(force){
+    if(!syncConfigured() || syncInFlight) return;
+    if(force !== true){
+      if(document.hidden || syncPending) return;
+      const ae = document.activeElement;
+      if(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+      if(document.querySelector('.modal-overlay.open')) return;
+      if(typeof wz !== 'undefined' && wz && ((wz.cart && wz.cart.length) || wz.step >= 2)) return;
+    }
+    syncInFlight = true;
+    try{
+      const data = await syncRead();
+      if(data && (data.devices || data.accessories || data.orders || data.reservePlans) && (Number(data._syncTs) || 0) > syncLocalTs && !syncPending){
+        syncApply(data); refreshAfterSync();
+      }
+      firebaseStatus = 'ok'; firebaseLastError = ''; syncLastOkAt = new Date();
+    }catch(e){
+      firebaseStatus = 'error'; firebaseLastError = syncFailMsg(e);
+    }
+    syncInFlight = false;
+    renderFirebaseStatus(false);
+  }
+  async function syncNow(){
+    if(!syncConfigured()){ showToast('Conectá primero la nube'); return; }
+    await syncPoll(true);
+    await firebasePushNow();
+    if(firebaseStatus === 'ok') showToast('Sincronizado');
+  }
+  setInterval(() => { syncPoll(); }, 8000);
+
   function firebaseDisconnect(){
-    if(!confirm('¿Desconectar Firebase? Los datos ya guardados en este equipo no se borran.')) return;
-    firebaseConfig = { url: '', secret: '' };
+    if(!confirm('¿Desconectar la sincronización? Los datos ya guardados en este equipo no se borran.')) return;
+    firebaseConfig = Object.assign({}, SYNC_DEFAULT);
     saveFirebaseConfigToStorage();
     firebaseStatus = 'idle';
     renderFirebaseStatus();
-    showToast('Firebase desconectado');
+    showToast('Sincronización desconectada');
   }
 
   function scheduleFirebasePush(){
-    if(!firebaseConfig.url) return;
+    if(!syncConfigured() || syncApplyingRemote) return;
+    syncPending = true;
     clearTimeout(firebaseWriteTimer);
     firebaseWriteTimer = setTimeout(firebasePushNow, 800);
   }
 
-  function renderFirebaseStatus(){
-    const box = document.getElementById('firebase-status-box');
-    if(!box) return;
-    const urlField = document.getElementById('firebase-url');
-    const secretField = document.getElementById('firebase-secret');
-    if(urlField) urlField.value = firebaseConfig.url;
-    if(secretField) secretField.value = firebaseConfig.secret;
-    if(!firebaseConfig.url){
-      box.innerHTML = `<div class="calc-title">Estado</div><div class="calc-num">Sin conectar — pegá tu URL de Firebase abajo</div>`;
-    }else if(firebaseStatus === 'error'){
-      box.innerHTML = `<div class="calc-title">Estado</div><div class="calc-num" style="color:var(--red);">Configurada, pero no se pudo conectar</div>`;
-    }else{
-      box.innerHTML = `<div class="calc-title">Estado</div><div class="calc-num positive">Conectada</div>`;
+  function syncStatusHtml(kind){
+    const active = syncConfigured() && syncMode() === kind;
+    if(!active){
+      if(syncConfigured()) return `<div class="calc-title">Estado</div><div class="calc-num">Inactiva — se está usando ${syncName()}</div>`;
+      return `<div class="calc-title">Estado</div><div class="calc-num">Sin conectar</div>`;
     }
+    if(firebaseStatus === 'error') return `<div class="calc-title">Estado</div><div class="calc-num" style="color:var(--red);">${esc(firebaseLastError || 'Configurada, pero no se pudo conectar')}</div>`;
+    const t = syncLastOkAt ? ' · última sincronización ' + syncLastOkAt.toLocaleTimeString('es-AR') : '';
+    return `<div class="calc-title">Estado</div><div class="calc-num positive">Conectada y al día${t}</div>`;
+  }
+
+  function renderFirebaseStatus(fillFields){
+    ['firebase','supabase','vercel'].forEach(k => {
+      const box = document.getElementById('sync-status-' + k);
+      if(box) box.innerHTML = syncStatusHtml(k);
+    });
+    if(fillFields === false) return;
+    const set = (id, v) => { const e = document.getElementById(id); if(e) e.value = v || ''; };
+    set('firebase-url', firebaseConfig.url); set('firebase-secret', firebaseConfig.secret);
+    set('sb-url', firebaseConfig.sbUrl); set('sb-key', firebaseConfig.sbKey); set('sb-table', firebaseConfig.sbTable || 'app_data');
+    set('v-url', firebaseConfig.vUrl); set('v-pass', firebaseConfig.vPass);
   }
 
   async function initFirebaseSync(){
-    if(!firebaseConfig.url) return;
+    if(!syncConfigured()) return;
     await firebasePullNow();
   }
 
@@ -4343,30 +4504,52 @@ function showSetup(){
   $('au-join').onclick=showJoin;
 }
 
+function cloudFields(c){
+  var dm=((typeof syncConfigured==='function'&&syncConfigured())&&c.mode)||((/^https?:$/.test(location.protocol)&&!/claude/.test(location.hostname))?'vercel':'firebase');
+  function o(v,t){ return '<option value="'+v+'"'+(dm===v?' selected':'')+'>'+t+'</option>'; }
+  return '<div class="field"><label>Servicio</label><select id="cj-mode">'+o('firebase','Firebase')+o('supabase','Supabase')+o('vercel','Vercel (contraseña)')+'</select></div>'+
+   '<div id="cj-g-firebase"><div class="field"><label>URL de la base de datos</label><input id="cj-url" autocapitalize="none" spellcheck="false" placeholder="https://tu-proyecto-default-rtdb.firebaseio.com" value="'+E(c.url||'')+'"></div>'+
+   '<div class="field"><label>Secreto (opcional)</label><input id="cj-secret" type="password" autocapitalize="none" value="'+E(c.secret||'')+'"></div></div>'+
+   '<div id="cj-g-supabase"><div class="field"><label>URL del proyecto</label><input id="cj-sburl" autocapitalize="none" spellcheck="false" placeholder="https://xxxx.supabase.co" value="'+E(c.sbUrl||'')+'"></div>'+
+   '<div class="field"><label>Clave pública (anon / publishable)</label><input id="cj-sbkey" type="password" autocapitalize="none" value="'+E(c.sbKey||'')+'"></div>'+
+   '<div class="field"><label>Tabla</label><input id="cj-sbtable" autocapitalize="none" placeholder="app_data" value="'+E(c.sbTable||'app_data')+'"></div></div>'+
+   '<div id="cj-g-vercel"><div class="field"><label>Contraseña de sincronización</label><input id="cj-vpass" type="password" autocomplete="off" value="'+E(c.vPass||'')+'"></div>'+
+   '<div class="field"><label>URL del sitio en Vercel (vacío si abriste este mismo sitio)</label><input id="cj-vurl" autocapitalize="none" spellcheck="false" placeholder="https://tu-app.vercel.app" value="'+E(c.vUrl||'')+'"></div></div>';
+}
+function cloudBind(){ var m=$('cj-mode'); function sh(){ ['firebase','supabase','vercel'].forEach(function(k){ $('cj-g-'+k).style.display=(m.value===k)?'block':'none'; }); } m.onchange=sh; sh(); }
+function cloudApply(){
+  var v=function(id){ var e=$(id); return e?e.value.trim():''; };
+  Object.assign(firebaseConfig,{ mode:$('cj-mode').value, url:v('cj-url'), secret:v('cj-secret'), sbUrl:v('cj-sburl'), sbKey:v('cj-sbkey'), sbTable:v('cj-sbtable')||'app_data', vUrl:v('cj-vurl'), vPass:$('cj-vpass').value });
+  try{ saveFirebaseConfigToStorage(); }catch(e){}
+  return syncConfigured();
+}
+function cloudErr(){ return firebaseLastError||'No se pudo conectar. Revisá los datos.'; }
+
 function showJoin(){
   lockApp();
-  var c=(typeof firebaseConfig!=='undefined'&&firebaseConfig)||{url:'',secret:''};
-  screen('<div class="auth-h">Iniciar sesión</div><div class="auth-s">Conectá este dispositivo a tu negocio con la URL de la base de datos y entrá con tu usuario.</div>'+
-    '<div class="field"><label>URL de la base de datos</label><input id="cl-url" autocapitalize="none" spellcheck="false" placeholder="https://tu-proyecto-default-rtdb.firebaseio.com" value="'+E(c.url||'')+'"></div>'+
-    '<div class="field"><label>Secreto (opcional)</label><input id="cl-secret" type="password" autocapitalize="none" value="'+E(c.secret||'')+'"></div>'+
+  var c=(typeof firebaseConfig!=='undefined'&&firebaseConfig)||{};
+  screen('<div class="auth-h">Iniciar sesión</div><div class="auth-s">Conectá este dispositivo a tu negocio y entrá con tu usuario.</div>'+
+    cloudFields(c)+
     '<div class="field"><label>Usuario</label><input id="au-user" autocomplete="username" autocapitalize="none" spellcheck="false"></div>'+
     '<div class="field"><label>Contraseña</label><input id="au-pass" type="password" autocomplete="current-password"></div>'+
     remBox(true)+'<div class="auth-err" id="au-err"></div><button class="btn btn-primary btn-full" id="jn-go">Conectar e iniciar sesión</button>'+
     '<div class="auth-links"><a id="au-back">Crear cuenta nueva</a></div>');
+  cloudBind();
   $('au-back').onclick=boot;
   $('jn-go').onclick=function(){
-    var url=$('cl-url').value.trim(), u=$('au-user').value, p=$('au-pass').value, b=$('jn-go');
-    if(!url){ err('Pegá la URL de la base de datos.'); return; } if(!u||!p){ err('Completá usuario y contraseña.'); return; }
+    var u=$('au-user').value, p=$('au-pass').value, b=$('jn-go');
+    if(!cloudApply()){ err('Completá los datos de conexión.'); return; } if(!u||!p){ err('Completá usuario y contraseña.'); return; }
     var rem=$('au-rem').checked; b.disabled=true; b.textContent='Conectando…'; err('');
-    firebaseConfig.url=url; firebaseConfig.secret=$('cl-secret').value.trim(); try{ saveFirebaseConfigToStorage(); }catch(e){}
-    Promise.race([Promise.resolve(firebasePullNow()),new Promise(function(r){setTimeout(r,10000);})]).catch(function(){}).then(function(){
+    function fail(m){ err(m); b.disabled=false; b.textContent='Conectar e iniciar sesión'; }
+    Promise.race([Promise.resolve(firebasePullNow()),new Promise(function(r){setTimeout(function(){r('timeout');},10000);})]).catch(function(){ return false; }).then(function(ok){
+      if(ok===false||ok==='timeout'){ fail(ok==='timeout'?'Tardó demasiado en responder.':cloudErr()); return; }
       setTimeout(function(){ try{
         var acc=byUser(u);
-        if(!acc){ err(admins().length?'Usuario o contraseña incorrectos.':'No se encontraron cuentas en esa base. Revisá la URL o subí los datos desde el dispositivo del administrador.'); b.disabled=false; b.textContent='Conectar e iniciar sesión'; return; }
-        if(acc.active===false){ err('Esta cuenta está desactivada.'); b.disabled=false; b.textContent='Conectar e iniciar sesión'; return; }
-        if(hashPw(p,acc.salt,acc.it)!==acc.hash){ err('Usuario o contraseña incorrectos.'); b.disabled=false; b.textContent='Conectar e iniciar sesión'; return; }
+        if(!acc){ fail(admins().length?'Usuario o contraseña incorrectos.':'No se encontraron cuentas en esa base. Subí los datos desde el dispositivo del administrador.'); return; }
+        if(acc.active===false){ fail('Esta cuenta está desactivada.'); return; }
+        if(hashPw(p,acc.salt,acc.it)!==acc.hash){ fail('Usuario o contraseña incorrectos.'); return; }
         enter(acc,rem);
-      }catch(e){ err('Error: '+(e&&e.message||e)); b.disabled=false; b.textContent='Conectar e iniciar sesión'; } },30);
+      }catch(e){ fail('Error: '+(e&&e.message||e)); } },30);
     });
   };
 }
@@ -4406,18 +4589,16 @@ function showForgot(){
 
 function showCloud(){
   lockApp();
-  var c=(typeof firebaseConfig!=='undefined'&&firebaseConfig)||{url:'',secret:''};
-  screen('<div class="auth-h">Conectar a la nube</div><div class="auth-s">Para usar el mismo negocio desde otro dispositivo, pegá los datos de sincronización (Firebase) del administrador.</div>'+
-    '<div class="field"><label>URL de la base de datos</label><input id="cl-url" autocapitalize="none" spellcheck="false" value="'+E(c.url||'')+'"></div>'+
-    '<div class="field"><label>Secreto (opcional)</label><input id="cl-secret" type="password" autocapitalize="none" value="'+E(c.secret||'')+'"></div>'+
-    '<div class="auth-err" id="au-err"></div><button class="btn btn-primary btn-full" id="cl-go">Conectar y traer datos</button>'+
+  var c=(typeof firebaseConfig!=='undefined'&&firebaseConfig)||{};
+  screen('<div class="auth-h">Conectar a la nube</div><div class="auth-s">Para usar el mismo negocio desde otro dispositivo, completá los datos de sincronización del administrador.</div>'+
+    cloudFields(c)+'<div class="auth-err" id="au-err"></div><button class="btn btn-primary btn-full" id="cl-go">Conectar y traer datos</button>'+
     '<div class="auth-links"><a id="au-back">Volver</a></div>');
+  cloudBind();
   $('au-back').onclick=boot;
   $('cl-go').onclick=function(){
-    var u=$('cl-url').value.trim(); if(!u){ err('Pegá la URL.'); return; }
-    var b=$('cl-go'); b.disabled=true; b.textContent='Conectando…';
-    firebaseConfig.url=u; firebaseConfig.secret=$('cl-secret').value.trim(); try{ saveFirebaseConfigToStorage(); }catch(e){}
-    Promise.resolve(firebasePullNow()).then(function(){ boot(); }).catch(function(){ err('No se pudo conectar.'); b.disabled=false; b.textContent='Conectar y traer datos'; });
+    if(!cloudApply()){ err('Completá los datos de conexión.'); return; }
+    var b=$('cl-go'); b.disabled=true; b.textContent='Conectando…'; err('');
+    Promise.resolve(firebasePullNow()).then(function(ok){ if(ok===false){ err(cloudErr()); b.disabled=false; b.textContent='Conectar y traer datos'; } else boot(); }).catch(function(){ err('No se pudo conectar.'); b.disabled=false; b.textContent='Conectar y traer datos'; });
   };
 }
 
@@ -4554,7 +4735,7 @@ setInterval(function(){ if(isEmp()&&!remembered&&Date.now()-lastAct>IDLE_MS) log
 function boot(){
   try{
     if(!admins().length){
-      var hasCloud=(typeof firebaseConfig!=='undefined')&&firebaseConfig&&firebaseConfig.url;
+      var hasCloud=(typeof syncConfigured==='function')&&syncConfigured();
       if(hasCloud){ lockApp(); screen('<div class="auth-h">Buscando tu negocio…</div><div class="auth-s">Consultando la nube.</div>');
         Promise.race([Promise.resolve(firebasePullNow()),new Promise(function(r){setTimeout(r,6000);})]).catch(function(){}).then(function(){ if(!admins().length) showSetup(); else boot(); }); return; }
       showSetup(); return;
